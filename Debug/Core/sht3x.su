@@ -1,0 +1,6 @@
+sht3x.c:28:16:calculate_crc	32	static
+sht3x.c:44:13:sht3x_send_command	32	static
+sht3x.c:56:17:uint8_to_uint16	16	static
+sht3x.c:61:6:sht3x_init	40	static
+sht3x.c:81:6:sht3x_read_temperature_and_humidity	48	static
+sht3x.c:107:6:sht3x_set_header_enable	16	static
