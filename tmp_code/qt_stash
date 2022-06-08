@@ -1,0 +1,33 @@
+void MainWindow::testSerial(){
+    QSerialPortInfo info;
+    for(auto &port : info.availablePorts()){
+        qDebug()<<port.portName();
+    }
+    serial = new QSerialPort();
+    serial->setBaudRate(QSerialPort::Baud9600);//baudRate);
+    serial->setPortName("ttyUSB0");//portName);
+    serial->setDataBits(QSerialPort::Data8);
+    serial->setStopBits(QSerialPort::OneStop);
+    serial->setParity(QSerialPort::NoParity);
+    serial->setFlowControl(QSerialPort::NoFlowControl);
+    qDebug()<<serial->open(QIODevice::ReadWrite);//ReadWrite
+
+    /*
+    QString str = "asdasdasdasdasdasd\r\n";
+    qDebug()<<str.toLocal8Bit();
+    qDebug()<<serial->write(str.toLocal8Bit());
+    QByteArray ba = str.toLocal8Bit();
+
+    qDebug()<<serial->write(ba);*/
+    qDebug()<<serial->error();
+            /*
+    QByteArray ba = str.toLocal8Bit();
+    const char *c = ba.data();
+    qDebug()<<str.toLocal8Bit();
+    qDebug()<<serial->write(str.toLocal8Bit());
+    int status = serial->write(c);
+    if(serial->write(c) != -1){
+         //serial.read - kontrola z druhé strany, že jsem poslal vše
+    }   // nebo použít serial.writebytes
+    */
+    serial->close();
