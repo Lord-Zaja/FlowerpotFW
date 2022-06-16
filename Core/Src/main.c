@@ -89,28 +89,89 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_ADC2_Init(void);
 /* USER CODE BEGIN PFP */
+char * charCopy(int left, int right);
+int listenPacket(float *packet);
+float getRawTemp(sht3x_handle_t *handle);
+bool saveCalibration(float k0, float k1);
+bool openCalibrationFile(float *k0,float *k1);
+bool saveConfig(uint8_t mode, uint8_t temp, uint8_t hum);
+bool openConfigFile(uint8_t *mode, uint8_t *hum, uint8_t *temp);
+bool writeToFile(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1, float soil2);
+uint8_t bcdToDec(uint8_t val);
+uint8_t decToBcd(uint8_t val);
+void getLine();
+void uart_buffering();
 void myprintf(const char *fmt, ...);
 sht3x_handle_t setupSHT();
 void readData(sht3x_handle_t *handle, float *temp, float *hum, uint8_t *wcup, uint8_t *wrez, float *soil1, float *soil2);
-bool openConfigFile(uint8_t *mode, uint8_t *hum, uint8_t *temp);
 char* removeSpaces(char *str);
-bool writeToFile(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1, float soil2);
-void getLine();
-uint8_t bcdToDec(uint8_t val);
-uint8_t decToBcd(uint8_t val);
-bool saveConfig(uint8_t mode, uint8_t temp, uint8_t hum);
 void sendMyData(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1, float soil2);
 void sendConfig(uint8_t modeset,uint8_t humset,uint8_t tempset);
 void zalij(int time_ms);
+void sendStatus(bool zalevam, bool ohrivam);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/*
+ * \brief Z aktuálního řádku v bufferu sériové linky RXLine vyjme řetězec ležící mezi left a right indexem
+ * @return *char array
+ */
+char * charCopy(int left, int right){
+    if(left >= right){
+        return NULL;
+    }
+    char *tmp_char = (char*)malloc(32);
+    memcpy(tmp_char,&RXLine[left+1],right-left-1);
+    tmp_char[right-left-1] = '\0';
+    return tmp_char;
+}
+/*
+ * \brief Zkoumá, zda v bufferu sériové linky RXLine není packet ({})
+ * @return Velikost packetu, pokud packet není obdržen vrací 0
+ */
+int listenPacket(float *packet){
+    //*packet je pole intů
+    uint8_t left = strcspn(RXLine,"{");
+    uint8_t right = strcspn(RXLine,"}");
+    if(!(left < right && right != strlen(RXLine))){
+        return 0;
+    }
+    // levá závorka je nalevo, pravá závorka je někde napravo
+	myprintf("Packet captured!\n\r");
+
+    int n = 0; // počet prvků
+    uint8_t strednik;
+    char *s;
+
+    do{
+        strednik = strcspn(&RXLine[left+1],";") + left + 1;
+        if(strednik > right){// žádný středník to nenašlo
+            s = charCopy(left,right);
+        }else{
+            s = charCopy(left,strednik);
+        }
+        *packet = (float)atof(s);
+        ++packet;
+        free(s);
+        n++;
+        left = strednik;
+    }while(strednik != strlen(RXLine));
+    return n;
+}
+/*
+ * \brief Přečte samotnou surovou teplotu (nepřepočítá ji)
+ * @return float surová teplota
+ */
 float getRawTemp(sht3x_handle_t *handle){
 	float temperature,hum;
 	sht3x_read_temperature_and_humidity(handle, &temperature, &hum);
 	return temperature;
 }
+/*
+ * \brief Uloží kalibrační hodnoty pro teplotní senzor do souboru cal.txt
+ * @return true, pokud vše dopadlo tak jak mělo, jinak false
+ */
 bool saveCalibration(float k0, float k1){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_SET);// orange led to indicate data logging
 	//save config to config file
@@ -183,6 +244,10 @@ bool saveCalibration(float k0, float k1){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_RESET);// orange led to indicate data logging
 	return true;
 }
+/*
+ * \brief Otevře soubor s kalibračními hodnotami teplotního čidla a vloží do argumentů funkce
+ * @return true, pokud vše dopadlo tak jak mělo, jinak false
+ */
 bool openCalibrationFile(float *k0,float *k1){
 	//!!!!!!!!!!!!! POZOR .. v souboru nesmí být na začátku prázdné řádky!!!!!
 	// .. teda .. je třeba odzkoušet .. možná jsem to akorát opravil
@@ -229,10 +294,10 @@ bool openCalibrationFile(float *k0,float *k1){
     myprintf("I was able to open 'cal.txt' for reading!\r\n");
 
     //Read 30 bytes from "test.txt" on the SD card
-    BYTE readBuf[30];
+    BYTE readBuf[64];
 
     for(int i = 0; i<3; i++){
-    	TCHAR* rres = f_gets((TCHAR*)readBuf, 30, &fil);	// přečte celý řádek, pokud nezaplní buffer
+    	TCHAR* rres = f_gets((TCHAR*)readBuf, 64, &fil);	// přečte celý řádek, pokud nezaplní buffer
 		if(rres != 0) {
 			myprintf("Read string from 'cal.txt' contents: %s\n\r", readBuf);
 			char *data = &readBuf[0];
@@ -280,6 +345,10 @@ bool openCalibrationFile(float *k0,float *k1){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_RESET);// orange led to indicate SD activity
     return true;
 }
+/*
+ * \brief Uloží nastavené hodnoty pro řízení do souboru config.txt
+ * @return true, pokud vše dopadlo tak jak mělo, jinak false
+ */
 bool saveConfig(uint8_t mode, uint8_t temp, uint8_t hum){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_SET);// orange led to indicate data logging
 	//save config to config file
@@ -359,172 +428,10 @@ bool saveConfig(uint8_t mode, uint8_t temp, uint8_t hum){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_RESET);// orange led to indicate data logging
 	return true;
 }
-uint8_t bcdToDec(uint8_t val){
-	return RTC_Bcd2ToByte(val);
-	return((val/10*10)+(val%16));
-}
-uint8_t decToBcd(uint8_t val){
-	return RTC_ByteToBcd2(val);
-	return ((val/10*10)+(val%10));
-}
-void getLine(){
-	RXDone = false;
-	//while?
-	/*
-	if(RXDone && huart1.RxState != HAL_UART_STATE_BUSY_RX){
-		RXBuffer[0] = '\0';
-		RXDone = false;
-		HAL_UART_Receive_IT(&huart1,&RXByte,1);
-	}else{
-		myprintf("UART is RX busy!");
-	}*/
-}
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-	if(huart->Instance == USART1){
-		// !!!!!!!!!!! POZOR .. nikdy nesmím v callbacku pro RX vysílat TX !!!!!!!!
-		// jinak se podělají zprávy posílané z stm
-		//HAL_UART_Transmit(&huart1, (uint8_t*)RXByte, 1, -1);//echo
-		strcat(&RXBuffer,&RXByte);
-		HAL_UART_Receive_IT(&huart1,&RXByte,1);
-	}
-}
-void uart_buffering(){
-	// ze všech nasbíraných dat se vezme pouze jeden řádek
-	// předpokládám, že během průchodu jedné smyčky nepošlu dva příkazy
-	if(strlen(RXLineBuffer)+strlen(RXBuffer) > 128){
-		myprintf("Buffer overflow!\n\r");
-		RXLineBuffer[0] = '\0';
-	}
-	strcat(&RXLineBuffer,&RXBuffer);
-	RXBuffer[0] = '\0';
-
-	int index = strcspn(RXLineBuffer,"\n\r");// počet znaků před
-	if(index != strlen(RXLineBuffer)){
-		//buffer obsahuje \n\r
-		if(!RXDone){
-			strcpy(&RXLine,&RXLineBuffer);
-			RXDone = true;
-			//myprintf(RXLine);
-		}
-		RXLineBuffer[0] = '\0';
-	}
-	/*
-	if(strlen(RXBuffer) >= 32){
-		RXBuffer[32] = '\n';
-		RXBuffer[33] = '\0';
-		myprintf("UART buffer přetekl!\r\n");
-		if(!RXDone){
-			strcpy(&RXLine,&RXBuffer);
-		}
-		RXDone = true;
-		RXBuffer[0] = '\0';
-		//HAL_UART_AbortReceive(&huart1);
-	}*/
-}
-
-void myprintf(const char *fmt, ...) {
-  static char buffer[256];
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
-  va_end(args);
-
-  int len = strlen(buffer);
-  HAL_UART_Transmit(&huart1, (uint8_t*)buffer, len, -1);
-
-}
-sht3x_handle_t setupSHT(){
-	// Create the handle for the sensor.
-	sht3x_handle_t handle = {
-	  .i2c_handle = &hi2c1,
-	  .device_address = SHT3X_I2C_DEVICE_ADDRESS_ADDR_PIN_HIGH
-	};
-
-	// Initialise sensor (tests connection by reading the status register).
-	if (!sht3x_init(&handle)) {
-	  myprintf("SHT3x access failed.\n\r");
-	  HAL_GPIO_WritePin(LD3_GPIO_Port,LD3_Pin,GPIO_PIN_SET);// red led
-	}
-	return handle;
-}
-void readData(sht3x_handle_t *handle, float *temp, float *hum, uint8_t *wcup, uint8_t *wrez, float *soil1, float *soil2){
-	// teplota ve stupních, hum v %
-	sht3x_read_temperature_and_humidity(handle, temp, hum);
-	if(abs(*temp) < 100){
-		*temp = k0_temp + k1_temp*(*temp);	// kalibřaní křivka
-	}
-	// digitální vstupy - miska, rezervoár
-	// nejdříve se musí zapnout napáení květináče
-	HAL_GPIO_WritePin(pwr_GPIO_Port,pwr_Pin,SET);
-	HAL_Delay(50);// pro jistotu chvilku počkám, aby vše naběhlo
-	if(!HAL_GPIO_ReadPin(cup_med_GPIO_Port,cup_med_Pin)){
-		if(!HAL_GPIO_ReadPin(cup_high_GPIO_Port,cup_high_Pin)){
-			*wcup = 2;
-		}else{
-			*wcup = 1;
-		}
-	}else{
-		*wcup = 0;
-	}
-	if(!HAL_GPIO_ReadPin(rez_med_GPIO_Port,rez_med_Pin)){
-		if(!HAL_GPIO_ReadPin(rez_high_GPIO_Port,rez_high_Pin)){
-			*wrez = 2;
-		}else{
-			*wrez = 1;
-		}
-	}else{
-		*wrez = 0;
-	}
-
-	// Soil adc humidities
-	// Get ADC value
-	int adc1;
-	int adc2;
-	if( HAL_ADC_Start(&hadc1) != HAL_OK){
-		myprintf("HAL ADC1 Start fucked up!\n\r");
-		return;
-	}
-	if( HAL_ADC_Start(&hadc2) != HAL_OK){
-			myprintf("HAL ADC2 Start fucked up!\n\r");
-			return;
-	}
-	if(HAL_ADC_PollForConversion(&hadc1, 10) != HAL_OK){
-		myprintf("HAL ADC1 Poll fucked up!\n\r");
-		return;
-	}
-	adc1 = HAL_ADC_GetValue(&hadc1);
-	if(HAL_ADC_PollForConversion(&hadc2, 10) != HAL_OK){
-		myprintf("HAL ADC2 Poll fucked up!\n\r");
-		return;
-	}
-	adc2 = HAL_ADC_GetValue(&hadc2);
-	float u_meas_1 = (adc1/4096.0f)*3.3f;	// !!!!!!!!! musím označit, že násobím flouty!!!!! jinak tady program zmarzne
-	float u_meas_2 = (adc2/4096.0f)*3.3f;
-	float u_2 = 2.0f;		// h = 0%
-	float u_1 = 0.6f;	// h = 100%
-	float a = 100.0f/(u_1 - u_2);	// rovnice přímky
-	float b = 100.0f-a*u_1;
-	*soil1 = a*u_meas_1 + b;
-	*soil2 = a*u_meas_2 + b;
-
-	HAL_GPIO_WritePin(pwr_GPIO_Port,pwr_Pin,SET);
-	/*
-	// Enable heater for two seconds.
-	sht3x_set_header_enable(&handle, true);
-	HAL_Delay(2000);
-	sht3x_set_header_enable(&handle, false);*/
-}
-char* removeSpaces(char *str){
-    int i =0,j=0;
-    while(str[i]){
-        if(str[i] != ' '){
-            str[j++] = str[i];
-        }
-        i++;
-    }
-    str[j] = '\0';
-    return str;
-}
+/*
+ * \brief Otevře soubor s nastavením pro řízení a vloží do argumentů funkce
+ * @return true, pokud vše dopadlo tak jak mělo, jinak false
+ */
 bool openConfigFile(uint8_t *mode, uint8_t *hum, uint8_t *temp){
 	//!!!!!!!!!!!!! POZOR .. v souboru nesmí být na začátku prázdné řádky!!!!!
 	// .. teda .. je třeba odzkoušet .. možná jsem to akorát opravil
@@ -626,6 +533,10 @@ bool openConfigFile(uint8_t *mode, uint8_t *hum, uint8_t *temp){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_RESET);// orange led to indicate SD activity
     return true;
 }
+/*
+ * \brief Uloží aktuální snímané veličiny
+ * @return true, pokud vše dopadlo tak jak mělo, jinak false
+ */
 bool writeToFile(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1, float soil2){
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_SET);// orange led to indicate SD activity
 	FATFS FatFs; 	//Fatfs handle
@@ -712,16 +623,227 @@ bool writeToFile(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1,
 	HAL_GPIO_WritePin(GPIOE,GPIO_PIN_10,GPIO_PIN_RESET);// orange led to indicate SD activity
 	return true;
 }
+/*
+ * \brief Konverze z BCD formátu času do decimálního
+ * @return výsledek konverze
+ */
+uint8_t bcdToDec(uint8_t val){
+	return RTC_Bcd2ToByte(val);
+}
+/*
+ * \brief Konverze z decimálního formátu do BCD formátu času
+ * @return výsledek konverze
+ */
+uint8_t decToBcd(uint8_t val){
+	return RTC_ByteToBcd2(val);
+	return ((val/10*10)+(val%10));
+}
+/*
+ * \brief Nyní nevyužitá funkce, pro případ budoucí potřeby zde nechávám
+ */
+void getLine(){
+	RXDone = false;
+	//while?
+	/*
+	if(RXDone && huart1.RxState != HAL_UART_STATE_BUSY_RX){
+		RXBuffer[0] = '\0';
+		RXDone = false;
+		HAL_UART_Receive_IT(&huart1,&RXByte,1);
+	}else{
+		myprintf("UART is RX busy!");
+	}*/
+}
+/*
+ * \brief UART callback
+ * 		  V callbacku ukládám jednotlivé přijímané byty do bufferu RXBuffer
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	if(huart->Instance == USART1){
+		// !!!!!!!!!!! POZOR .. nikdy nesmím v callbacku pro RX vysílat TX !!!!!!!!
+		// jinak se podělají zprávy posílané z stm
+		//HAL_UART_Transmit(&huart1, (uint8_t*)RXByte, 1, -1);//echo
+		strcat(&RXBuffer,&RXByte);
+		HAL_UART_Receive_IT(&huart1,&RXByte,1);
+	}
+}
+/*
+ * \brief Funkce pro zpracování nasbíraných dat přes sériovou linku
+ * 		  Data načítám do RXLineBuffer, ve kterém dále hledám CR+LF a jeden řádek vždy skopíruji do RXLine
+ * 		  RXLine je pak řetězec, obsahující aktuální řádek ze sériové linky
+ * 		  Pokud nevolám tuto funkci dost často, některá data se můžou ztratit.
+ * 		  Alternativní řešení přes DMA nefunguje.
+ * 		  Funkce musí být volána ve smyčce
+ */
+void uart_buffering(){
+	// ze všech nasbíraných dat se vezme pouze jeden řádek
+	// předpokládám, že během průchodu jedné smyčky nepošlu dva příkazy
+	if(strlen(RXLineBuffer)+strlen(RXBuffer) > 128){
+		myprintf("Buffer overflow!\n\r");
+		RXLineBuffer[0] = '\0';
+	}
+	strcat(&RXLineBuffer,&RXBuffer);
+	RXBuffer[0] = '\0';
+
+	int index = strcspn(RXLineBuffer,"\n\r");// počet znaků před
+	if(index != strlen(RXLineBuffer)){
+		//buffer obsahuje \n\r
+		if(!RXDone){
+			strcpy(&RXLine,&RXLineBuffer);
+			RXDone = true;
+			//myprintf(RXLine);
+		}
+		RXLineBuffer[0] = '\0';
+	}
+	/*
+	if(strlen(RXBuffer) >= 32){
+		RXBuffer[32] = '\n';
+		RXBuffer[33] = '\0';
+		myprintf("UART buffer přetekl!\r\n");
+		if(!RXDone){
+			strcpy(&RXLine,&RXBuffer);
+		}
+		RXDone = true;
+		RXBuffer[0] = '\0';
+		//HAL_UART_AbortReceive(&huart1);
+	}*/
+}
+/*
+ * \brief Funkce pro výpis na sériovou linku s formátováním pomocí vsnprintf
+ * 		  Funkce je víceméně převzata z internetu
+ */
+void myprintf(const char *fmt, ...) {
+  static char buffer[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  int len = strlen(buffer);
+  HAL_UART_Transmit(&huart1, (uint8_t*)buffer, len, -1);
+
+}
+/*
+ * \brief Funkce pro inicializaci čidla SHT31 pomocí knihovny převzaté z internetu
+ */
+sht3x_handle_t setupSHT(){
+	// Create the handle for the sensor.
+	sht3x_handle_t handle = {
+	  .i2c_handle = &hi2c1,
+	  .device_address = SHT3X_I2C_DEVICE_ADDRESS_ADDR_PIN_HIGH
+	};
+
+	// Initialise sensor (tests connection by reading the status register).
+	if (!sht3x_init(&handle)) {
+	  myprintf("SHT3x access failed.\n\r");
+	  HAL_GPIO_WritePin(LD3_GPIO_Port,LD3_Pin,GPIO_PIN_SET);// red led
+	}
+	return handle;
+}
+/*
+ * \brief Funkce pro čtení všech vstupních veličin. Hodnoty jsou načítány do argumentů funkce
+ */
+void readData(sht3x_handle_t *handle, float *temp, float *hum, uint8_t *wcup, uint8_t *wrez, float *soil1, float *soil2){
+	// teplota ve stupních, hum v %
+	sht3x_read_temperature_and_humidity(handle, temp, hum);
+	if(abs(*temp) < 100){
+		*temp = k0_temp + k1_temp*(*temp);	// kalibřaní křivka
+	}
+	// digitální vstupy - miska, rezervoár
+	// nejdříve se musí zapnout napáení květináče
+	HAL_GPIO_WritePin(pwr_GPIO_Port,pwr_Pin,SET);
+	HAL_Delay(50);// pro jistotu chvilku počkám, aby vše naběhlo
+	if(!HAL_GPIO_ReadPin(cup_med_GPIO_Port,cup_med_Pin)){
+		if(!HAL_GPIO_ReadPin(cup_high_GPIO_Port,cup_high_Pin)){
+			*wcup = 2;
+		}else{
+			*wcup = 1;
+		}
+	}else{
+		*wcup = 0;
+	}
+	if(!HAL_GPIO_ReadPin(rez_med_GPIO_Port,rez_med_Pin)){
+		if(!HAL_GPIO_ReadPin(rez_high_GPIO_Port,rez_high_Pin)){
+			*wrez = 2;
+		}else{
+			*wrez = 1;
+		}
+	}else{
+		*wrez = 0;
+	}
+
+	// Soil adc humidities
+	// Get ADC value
+	int adc1;
+	int adc2;
+	if( HAL_ADC_Start(&hadc1) != HAL_OK){
+		myprintf("HAL ADC1 Start fucked up!\n\r");
+		return;
+	}
+	if( HAL_ADC_Start(&hadc2) != HAL_OK){
+			myprintf("HAL ADC2 Start fucked up!\n\r");
+			return;
+	}
+	if(HAL_ADC_PollForConversion(&hadc1, 10) != HAL_OK){
+		myprintf("HAL ADC1 Poll fucked up!\n\r");
+		return;
+	}
+	adc1 = HAL_ADC_GetValue(&hadc1);
+	if(HAL_ADC_PollForConversion(&hadc2, 10) != HAL_OK){
+		myprintf("HAL ADC2 Poll fucked up!\n\r");
+		return;
+	}
+	adc2 = HAL_ADC_GetValue(&hadc2);
+	float u_meas_1 = (adc1/4096.0f)*3.3f;	// !!!!!!!!! musím označit, že násobím flouty!!!!! jinak tady program zmarzne
+	float u_meas_2 = (adc2/4096.0f)*3.3f;
+	float u_2 = 2.0f;		// h = 0%
+	float u_1 = 0.6f;	// h = 100%
+	float a = 100.0f/(u_1 - u_2);	// rovnice přímky
+	float b = 100.0f-a*u_1;
+	*soil1 = a*u_meas_1 + b;
+	*soil2 = a*u_meas_2 + b;
+
+	HAL_GPIO_WritePin(pwr_GPIO_Port,pwr_Pin,SET);
+	/*
+	// Enable heater for two seconds.
+	sht3x_set_header_enable(&handle, true);
+	HAL_Delay(2000);
+	sht3x_set_header_enable(&handle, false);*/
+}
+/*
+ * \brief Funkce pro odstranění mezer v řetězci
+ */
+char* removeSpaces(char *str){
+    int i =0,j=0;
+    while(str[i]){
+        if(str[i] != ' '){
+            str[j++] = str[i];
+        }
+        i++;
+    }
+    str[j] = '\0';
+    return str;
+}
+/*
+ * \brief Funkce pro poslání aktuálních snímaných veličin přes síriovou linku ve formě paketu
+ * 		  {temp;hum;wcup;wrez;soil1;soil2}
+ */
 void sendMyData(float temp, float hum, uint8_t wcup, uint8_t wrez, float soil1, float soil2){
 	char data[128];
 	sprintf(data,"{%.2f;%.2f;%i;%i;%.2f;%.2f}\n\r",temp,hum,wcup,wrez,soil1,soil2);
 	HAL_UART_Transmit(&huart1,(uint8_t*)data,strlen(data),-1);
 }
+/*
+ * \brief Funkce pro poslání aktuálních nastavení řízení přes sériovou linku ve formě paketu
+ *   	  {mode;temperature;humidity}
+ */
 void sendConfig(uint8_t modeset,uint8_t humset,uint8_t tempset){
 	char data[128];
 	sprintf(data,"{%i;%i;%i}\n\r",modeset,tempset,humset);
 	HAL_UART_Transmit(&huart1,(uint8_t*)data,strlen(data),-1);
 }
+/*
+ * \brief Funkce pro krátké zalití květináče. Funkce pustí a nechá běžet čerpadlo po zvolenou dobu. Po uplynutí vypne.
+ * @param time_ms čas běhu čerpadla v milisekundách
+ */
 void zalij(int time_ms){
 	myprintf("{watter_on}\n\r");
 	HAL_GPIO_WritePin(motor_GPIO_Port,motor_Pin,GPIO_PIN_SET);
@@ -731,6 +853,10 @@ void zalij(int time_ms){
 	HAL_GPIO_WritePin(motor_GPIO_Port,motor_Pin,GPIO_PIN_RESET);
 	myprintf("{watter_off}\n\r");
 }
+/*
+ * \brief Funkce pro poslání aktuálního stavu řízení květináče přes sériovou linku ve formě paketu
+ * 		  {zalevam;ohrivam}
+ */
 void sendStatus(bool zalevam, bool ohrivam){
 	char data[128];
 	uint8_t watter,heat;
@@ -787,6 +913,8 @@ int main(void)
   MX_SPI2_Init();
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
+  //!!! Při použití DMA záleží na pořadí inicializace periférií
+  // pořadí z dokumentace mi fungovalo, pravděpodobně jsem udělal chybu ještě někde jinde
   /*
 	// -- Enables ADC DMA request
 	if(HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcDMABuffer, 2) != HAL_OK){
@@ -804,12 +932,8 @@ int main(void)
   sht3x_handle_t handle = setupSHT();
 
   myprintf("Flowerpot started\r\n");
-  float temperature, humidity;
-  uint8_t watter_cup, watter_rez;
-  float soil1, soil2;
-  uint8_t modeset;
-	uint8_t humset;
-	uint8_t tempset;
+  float temperature, humidity, soil1, soil2;
+  uint8_t watter_cup, watter_rez, modeset, humset, tempset;
   if(!openConfigFile(&modeset, &humset, &tempset)){
   	myprintf("Something fucked up during opening of config file!\n\r");
   }else{
@@ -831,31 +955,34 @@ int main(void)
     char tmp[3],tmp_char[32];
     tmp[2] = '\0';// jo jo .. mohl bych použít jen tmp_char .. ale už se mi to nechce předělávat :D
     // nula ukončí string .. používá se u nastavení času, bez toho je čas nesmysl
-    bool timeset = false;
-    uint8_t log_perioda = 1; // hodina
-    int time_hours = -1;
-    int time = -1;
-    int stop_day = -1;
-    int stop_time = -1;
-    bool zalevam = false;
-    bool ohrivam = false;
-    int watter_period = 10;	//minut mezi zaléváním
-
+    bool timeset = false;				// určuje, zda se nastavuje čas
+    uint8_t log_perioda = 1; 			// perioda ukládání dat na SD kartu v hodinach
+    bool ridim = true;					// určuje, zda zrovna ve smyčce chci řídit, čas rozhodl, že řídím - rozhoduji na konci smyčky
+    uint8_t control_period = 30;		// perioda s kterou řídím, v sekundach
+    int time_loghours = -1;				// proměnná pro uložení času logování dat
+    int time_controlseconds = -1;		// proměnná pro uložení času řízení
+    int time = -1;						// čas v minutách potřebný pro řízení
+    int stop_day = -1;					// den, kdy jsem naposled záleval - proces zalévání
+    int stop_time = -1;					// čas, kdy jsem zaléval - proces zalévání
+    bool zalevam = false;				// jestli probíhá proces zalévání
+    bool ohrivam = false;				// jestli probíhá proces ohřívání
+    int watter_period = 10;				// minut mezi zaléváním
+    float packet[32];					// max 32 čísel v paketu co dostávám
     myprintf("Waitig for time sequence: \n\r");
     while (1)
     {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    	uart_buffering();
-// smyčka pro úvodnmí nastaevgní času
+    	uart_buffering();// zpracoání bufferu uartu
+    	//testovací smyčka
     	while(false){// zkouška jestli funguje uart
     		if(RXDone){
     			myprintf(RXLine);
     			RXDone = false;
     		}
     	}
-
+    	// smyčka pro úvodnmí nastaevgní času
 		while(!timeset){// wait to receive current date and time
 			uart_buffering();
 			if(RXDone){
@@ -891,50 +1018,31 @@ int main(void)
 			}
 		}// smyčka pro nastavení času
 
-		// zapni sledování uartu
-		if(RXDone){
-			// hledám packet s nastavením: {mode; temp; hum}
-			uint8_t left = strcspn(RXLine,"{");
-			uint8_t right = strcspn(RXLine,"}");
-			uint8_t tmp_idx;
-			uint8_t tmp_idx2;
-			if(left < right && right != strlen(RXLine)){
-				myprintf("Packet captured!\n\r");
-				tmp_idx = strcspn(RXLine,";");
-				tmp_idx2 = strcspn(&RXLine[tmp_idx+1],";") + tmp_idx + 1;//druhý středník => mám vše
-				if(tmp_idx == strlen(RXLine) || tmp_idx2 >= strlen(RXLine)){
-					if(tmp_idx != strlen(RXLine)){// mám jen jeden středník, pak předpokládám, že přišla kalibrační data
-						memcpy(tmp_char,&RXLine[left+1],tmp_idx-left-1);
-						tmp_char[tmp_idx-left-1] = '\0';
-						k0_temp = (float)atof(tmp_char);
-						memcpy(tmp_char,&RXLine[tmp_idx+1],right-tmp_idx-1);// počítám s tím, že { nemusí být na nulové pozici
-						tmp_char[right-tmp_idx-1] = '\0';
-						k1_temp = (float)atof(tmp_char);
-						myprintf("Calibration set!\n\r");
-						myprintf("k0: %f\t k1: %e\n\r",k0_temp,k1_temp);
-						myprintf("Saving..\n\r");
-						if(saveCalibration(k0_temp,k1_temp)){
-							myprintf("Calibration saved!\n\r");
-						}
-					}else{
-						myprintf("Not enough items inside the packet!");
+		// sledování uartu
+		if(RXDone){// pokud byl přijat řádek
+			int packet_size = listenPacket(packet);
+			if(packet_size > 0){
+				if(idx == 2){// kalibrační paket: {k0;k1}
+					k0_temp = packet[0];
+					k1_temp = packet[1];
+					myprintf("Calibration set!\n\r");
+					myprintf("k0: %f\t k1: %e\n\r",k0_temp,k1_temp);
+					myprintf("Saving..\n\r");
+					if(saveCalibration(k0_temp,k1_temp)){
+						myprintf("Calibration saved!\n\r");
 					}
-				}else{
-					memcpy(tmp_char,&RXLine[left+1],tmp_idx-left-1);
-					tmp_char[tmp_idx-left-1] = '\0';
-					modeset = atoi(tmp_char);
-					memcpy(tmp_char,&RXLine[tmp_idx+1],tmp_idx2-tmp_idx-1);
-					tmp_char[tmp_idx2-tmp_idx-1] = '\0';
-					tempset = atoi(tmp_char);
-					memcpy(tmp_char,&RXLine[tmp_idx2+1],right-tmp_idx2-1);
-					tmp_char[right-tmp_idx2-1] = '\0';
-					humset = atoi(tmp_char);
+				}else if(pcaket_size == 3){//paket s nastavením: {mode; temp; hum}
+					modeset = (int)packet[0];
+					tempset = (int)packet[1];
+					humset = (int)packet[2];
 					myprintf("Variables set!\n\r");
 					myprintf("Modeset: %i\t Tempset: %i\t Humset: %i\n\r",modeset,tempset,humset);
 					myprintf("Saving..\n\r");
 					if(saveConfig(modeset, tempset, humset)){
 						myprintf("Variables saved!\n\r");
 					}
+				}else{
+					myprintf("Packet size %i not recognized!",packet_size);
 				}
 			}else if(strstr(RXLine,"getdata") != NULL){
 				myprintf("\n\r");
@@ -965,90 +1073,101 @@ int main(void)
 				float temp = getRawTemp(&handle);
 				myprintf("{%f}\n\r",temp);
 			}
-			RXDone = false;
+			RXDone = false;// začni znovu poslouchat
 			//getLine();
 		}//sledování uartu
 
 		//Řízení
-		readData(&handle, &temperature, &humidity, &watter_cup, &watter_rez, &soil1, &soil2);
-		// čas v minutách
-		time = bcdToDec(sTime.Hours)*60 + bcdToDec(sTime.Minutes) + bcdToDec(sTime.Seconds)/60;
-		if(watter_rez != 0){// není prázdná nádrž
-			HAL_GPIO_WritePin(GPIOE,GPIO_PIN_13,GPIO_PIN_RESET);// red led
-			switch(modeset){//režimy zalévání
-			case 0:
-				//plná miska
-				//udržuje misku mezi max a med hodnotou
+		if(ridim){
+			readData(&handle, &temperature, &humidity, &watter_cup, &watter_rez, &soil1, &soil2);
+			// čas v minutách
+			time = bcdToDec(sTime.Hours)*60 + bcdToDec(sTime.Minutes) + bcdToDec(sTime.Seconds)/60;
+			if(watter_rez != 0){// není prázdná nádrž
+				HAL_GPIO_WritePin(GPIOE,GPIO_PIN_13,GPIO_PIN_RESET);// red led
+				switch(modeset){//režimy zalévání
+				case 0:
+					//plná miska
+					//udržuje misku mezi max a med hodnotou
 
-				if(!zalevam && watter_cup < 1){
-					// voda klesla pod med => zalij
-					zalevam = true;
-					HAL_GPIO_WritePin(GPIOE,GPIO_PIN_12,GPIO_PIN_SET);// blue led
-					//zalij(1000);
-				}else if(zalevam && watter_cup < 2){
-					//voda není na max => dále zalévám
-					//zalij(1000);
+					if(!zalevam && watter_cup < 1){
+						// voda klesla pod med => zalij
+						zalevam = true;
+						HAL_GPIO_WritePin(GPIOE,GPIO_PIN_12,GPIO_PIN_SET);// blue led
+						//zalij(1000);
+					}else if(zalevam && watter_cup < 2){
+						//voda není na max => dále zalévám
+						//zalij(1000);
+					}else if(zalevam){
+						// vypni zalévání
+						zalevam = false;
+						HAL_GPIO_WritePin(GPIOE,GPIO_PIN_12,GPIO_PIN_RESET);// blue led
+					}
+					break;
+				}//switch
+				// proces zalévání
+				// zalévá se pouze krátkce v časových intervalech
+				if(stop_day == -1 && zalevam){// vynulováno pak zapni stopky
+					stop_day = bcdToDec(sDate.Date);
+					stop_time = time;
+					// před zalitím uložím data, abych mohl přímo pozorovat změny zapřčíčiněné zaléváním
+					writeToFile(temperature, humidity, watter_cup, watter_rez, soil1, soil2);
+					if(watter_rez < 2){
+						zalij(2000);
+					}else{
+						zalij(1000);
+					}
+
 				}else if(zalevam){
-					// vypni zalévání
-					zalevam = false;
-					HAL_GPIO_WritePin(GPIOE,GPIO_PIN_12,GPIO_PIN_RESET);// blue led
+					if(bcdToDec(sDate.Date) != stop_day){// při změně dne je třeba přičíst (odečíst) den
+						stop_time = stop_time - 24*60;
+					}
+					if(time - stop_time > watter_period){// každých pět minut na 1.5 sekundu zalij
+						stop_day = -1;// vynulování stopek
+					}
+				}else{// nezalévám .. pak vynuluj stopky
+					// pokud nastane zákmit .. nesmím hned začít pumpovat vodu ..
+					// voda se může pumpovat jen v 5 min intervalech
+					if(time - stop_time > watter_period){// každých pět minut na 1.5 sekundu zalij
+						stop_day = -1;// vynulování stopek
+						stop_time = -1;
+					}
 				}
-				break;
-			}//switch
-			// proces zalévání
-			// zalévá se pouze krátkce v časových intervalech
-			if(stop_day == -1 && zalevam){// vynulováno pak zapni stopky
-				stop_day = bcdToDec(sDate.Date);
-				stop_time = time;
-				// před zalitím uložím data, abych mohl přímo pozorovat změny zapřčíčiněné zaléváním
-				writeToFile(temperature, humidity, watter_cup, watter_rez, soil1, soil2);
-				if(watter_rez < 2){
-					zalij(2000);
-				}else{
-					zalij(1000);
-				}
-
-			}else if(zalevam){
-				if(bcdToDec(sDate.Date) != stop_day){// při změně dne je třeba přičíst (odečíst) den
-					stop_time = stop_time - 24*60;
-				}
-				if(time - stop_time > watter_period){// každých pět minut na 1.5 sekundu zalij
-					stop_day = -1;// vynulování stopek
-				}
-			}else{// nezalévám .. pak vynuluj stopky
-				// pokud nastane zákmit .. nesmím hned začít pumpovat vodu ..
-				// voda se může pumpovat jen v 5 min intervalech
-				if(time - stop_time > watter_period){// každých pět minut na 1.5 sekundu zalij
-					stop_day = -1;// vynulování stopek
-					stop_time = -1;
-				}
+			}else{
+				zalevam = false;
+				HAL_GPIO_WritePin(GPIOE,GPIO_PIN_13,GPIO_PIN_SET);// red led
 			}
-		}else{
-			zalevam = false;
-			HAL_GPIO_WritePin(GPIOE,GPIO_PIN_13,GPIO_PIN_SET);// red led
-		}
-		// ohřívání
-		if(tempset > 0){
-			if(temperature < tempset - 1 && !ohrivam){
-				HAL_GPIO_WritePin(lamp_GPIO_Port,lamp_Pin,GPIO_PIN_SET);
-				ohrivam = true;
-				myprintf("{heating_on}\n\r");
-			}else if(ohrivam && temperature > tempset + 0.5f){	// překročení požadované teploty .. vypni ohřívání
+			// ohřívání
+			if(tempset > 0){
+				if(temperature < tempset - 1 && !ohrivam){
+					HAL_GPIO_WritePin(lamp_GPIO_Port,lamp_Pin,GPIO_PIN_SET);
+					ohrivam = true;
+					myprintf("{heating_on}\n\r");
+				}else if(ohrivam && temperature > tempset + 0.5f){	// překročení požadované teploty .. vypni ohřívání
+					HAL_GPIO_WritePin(lamp_GPIO_Port,lamp_Pin,GPIO_PIN_RESET);
+					ohrivam = false;
+					myprintf("{heating_off}\n\r");
+				}
+			}else{
 				HAL_GPIO_WritePin(lamp_GPIO_Port,lamp_Pin,GPIO_PIN_RESET);
 				ohrivam = false;
-				myprintf("{heating_off}\n\r");
 			}
-		}else{
-			ohrivam = false;
-		}
+		}// if ridim
+		ridim = false;
 
 
-		//Logování dat
+		//Časová rozhodnutí - periodické řízení atd
 		HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BCD);//!!!!! POZOR .. čas se zasekne, pokud hned potom nevolám getDate!!!!!!!!!§
 		HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BCD);
-		if(time_hours != bcdToDec(sTime.Hours)){	// čas se změnil, zkontroluj zda nemám logovat data
-			time_hours = bcdToDec(sTime.Hours);
-			if(time_hours%log_perioda == 0){
+		if(time_controlseconds != bcdToDec(sTime.Seconds) + 60*bcdToDec(sTime.Minutes) + 3600*bcdToDec(sTime.Hours)){	// čas se změnil, zkontroluj zda nemám logovat data
+			time_controlseconds = bcdToDec(sTime.Seconds) + 60*bcdToDec(sTime.Minutes) + 3600*bcdToDec(sTime.Hours);
+			if(bcdToDec(sTime.Seconds) + 60*bcdToDec(sTime.Minutes) + 3600*bcdToDec(sTime.Hours) - time_controlseconds >= control_period){
+				ridim = true;
+			}
+		}
+		//Logování dat
+		if(time_loghours != bcdToDec(sTime.Hours)){	// čas se změnil, zkontroluj zda nemám logovat data
+			time_loghours = bcdToDec(sTime.Hours);
+			if(time_loghours%log_perioda == 0){
 				readData(&handle, &temperature, &humidity, &watter_cup, &watter_rez, &soil1, &soil2);
 				writeToFile(temperature, humidity, watter_cup, watter_rez, soil1, soil2);
 			}
@@ -1056,7 +1175,7 @@ int main(void)
 		//myprintf("test\n\r");
     	//myprintf("Date: %02d.%02d.%02d\t",bcdToDec(sDate.Date),bcdToDec(sDate.Month),bcdToDec(sDate.Year));
 		//myprintf("Time: %02d:%02d:%02d\r\n\r",bcdToDec(sTime.Hours),bcdToDec(sTime.Minutes),bcdToDec(sTime.Seconds));
-		HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);
+		HAL_GPIO_TogglePin(LD4_GPIO_Port, LD4_Pin);// přepni modrou led
     	//HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BCD);//!!!!! POZOR .. čas se zasekne, pokud hned potom nevolám getDate!!!!!!!!!§
     	//HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BCD);
 		HAL_Delay(100);
